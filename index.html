@@ -16,6 +16,8 @@
           "react-dom/client": "https://esm.sh/react-dom@19.1.0/client?external=react",
           "lucide-react": "https://esm.sh/lucide-react@0.468.0?external=react",
           "dexie": "https://esm.sh/dexie@4.0.11",
+          "zod": "https://esm.sh/zod@3.24.1",
+          "tailwind-merge": "https://esm.sh/tailwind-merge@3.3.0",
           "clxdb/ui": "https://esm.sh/clxdb@0.13.0/ui?deps=react@19.1.0,react-dom@19.1.0"
         }
       }
@@ -321,10 +323,17 @@
         Info,
       } from "lucide-react";
       import Dexie, { liveQuery, type Table } from "dexie";
+      import { twMerge } from "tailwind-merge";
+      import { z } from "zod";
+      import { startClxDBWithUI, type ClxDBWithUI } from "clxdb/ui";
 
       type PaymentMethodId = "paypay" | "ic" | "cash" | "credit";
       type EntryType = "purchase" | "transfer";
       type View = "calendar" | "list" | "stats";
+      type ClassName = string | false | null | undefined;
+
+      const cn = (...classNames: ClassName[]) =>
+        twMerge(classNames.filter(Boolean).join(" "));
 
       type Item = {
         id: string;
@@ -375,10 +384,6 @@
         data: Entry;
       };
 
-      type BackupEntry = Omit<Entry, "items"> & {
-        items: Omit<Item, "id">[];
-      };
-
       type PaymentMethod = {
         id: PaymentMethodId;
         name: string;
@@ -404,12 +409,6 @@
         title: string;
         message: string;
         action: () => Promise<void>;
-      };
-
-      type CloudClient = {
-        destroy: () => void;
-        sync: () => Promise<void>;
-        on: (event: "syncComplete", listener: () => void) => () => void;
       };
 
       class ReceiptDatabase extends Dexie {
@@ -493,61 +492,28 @@
           icon: CreditCard,
         },
       ];
-      const getPaymentMethod = (id: string) =>
-        PAYMENT_METHODS.find((paymentMethod) => paymentMethod.id === id) ??
-        PAYMENT_METHODS[0];
+      function getPaymentMethod(id: string) {
+        return (
+          PAYMENT_METHODS.find((paymentMethod) => paymentMethod.id === id) ??
+          PAYMENT_METHODS[0]
+        );
+      }
 
       const createId = () => crypto.randomUUID();
 
       const getErrorMessage = (error: unknown) =>
         error instanceof Error ? error.message : "알 수 없는 오류";
 
-      const isRecord = (value: unknown): value is Record<string, unknown> =>
-        typeof value === "object" && value !== null;
-
-      const isPaymentMethodId = (value: unknown): value is PaymentMethodId =>
-        typeof value === "string" &&
-        PAYMENT_METHODS.some((paymentMethod) => paymentMethod.id === value);
-
-      function isBackupEntry(value: unknown): value is BackupEntry {
-        if (!isRecord(value)) return false;
-
-        return (
-          typeof value.id === "string" &&
-          typeof value.dayId === "string" &&
-          isValidDate(value.dayId) &&
-          (value.type === "purchase" || value.type === "transfer") &&
-          typeof value.order === "number" &&
-          Number.isFinite(value.order) &&
-          typeof value.amount === "number" &&
-          Number.isSafeInteger(value.amount) &&
-          value.amount > 0 &&
-          isPaymentMethodId(value.paymentMethod) &&
-          isPaymentMethodId(value.toMethod) &&
-          !(
-            value.type === "transfer" && value.paymentMethod === value.toMethod
-          ) &&
-          typeof value.title === "string" &&
-          typeof value.merchant === "string" &&
-          typeof value.memo === "string" &&
-          typeof value.excluded === "boolean" &&
-          Array.isArray(value.tags) &&
-          value.tags.every((tag) => typeof tag === "string") &&
-          Array.isArray(value.items) &&
-          value.items.every(
-            (item) =>
-              isRecord(item) &&
-              typeof item.name === "string" &&
-              typeof item.detail === "string",
-          )
-        );
-      }
-
       const formatYen = (amount: number) =>
-        new Intl.NumberFormat("ja-JP").format(amount) + "円";
+        `${new Intl.NumberFormat("ja-JP").format(amount)}円`;
 
-      const getDateKey = (date: Date) =>
-        `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      function getDateKey(date: Date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+
+        return `${year}-${month}-${day}`;
+      }
 
       const today = getDateKey(new Date());
 
@@ -568,6 +534,137 @@
         /^\d{4}-\d{2}-\d{2}$/.test(date) &&
         !Number.isNaN(+parseDate(date)) &&
         getDateKey(parseDate(date)) === date;
+
+      const paymentMethodIdSchema = z.enum(["paypay", "ic", "cash", "credit"]);
+
+      const backupEntrySchema = z
+        .object({
+          id: z.string(),
+          dayId: z.string().refine(isValidDate, "올바르지 않은 날짜입니다."),
+          type: z.enum(["purchase", "transfer"]),
+          order: z.number().finite(),
+          title: z.string(),
+          merchant: z.string(),
+          amount: z.number().int().positive().safe(),
+          paymentMethod: paymentMethodIdSchema,
+          toMethod: paymentMethodIdSchema,
+          excluded: z.boolean(),
+          tags: z.array(z.string()),
+          items: z.array(
+            z.object({
+              name: z.string(),
+              detail: z.string(),
+            }),
+          ),
+          memo: z.string(),
+        })
+        .superRefine((entry, context) => {
+          if (
+            entry.type === "transfer" &&
+            entry.paymentMethod === entry.toMethod
+          ) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["toMethod"],
+              message: "이체 결제수단은 서로 달라야 합니다.",
+            });
+          }
+        });
+
+      const backupSchema = z.object({
+        app: z.literal("resito"),
+        version: z.literal(1),
+        exportedAt: z.string().datetime(),
+        entries: z.array(backupEntrySchema),
+      });
+
+      function getPurchaseTotalsByDay(entries: Entry[]) {
+        const totals: Record<string, number> = {};
+
+        for (const entry of entries) {
+          if (entry.type !== "purchase" || entry.excluded) continue;
+
+          totals[entry.dayId] = (totals[entry.dayId] ?? 0) + entry.amount;
+        }
+
+        return totals;
+      }
+
+      function getTagTotals(entries: Entry[]) {
+        const totals: Record<string, number> = {};
+
+        for (const entry of entries) {
+          const tags = entry.tags.length ? entry.tags : ["미분류"];
+
+          for (const tag of tags) {
+            totals[tag] = (totals[tag] ?? 0) + entry.amount;
+          }
+        }
+
+        return totals;
+      }
+
+      function getEntriesByDay(entries: Entry[]) {
+        const entriesByDay: Record<string, Entry[]> = {};
+
+        for (const entry of entries) {
+          (entriesByDay[entry.dayId] ??= []).push(entry);
+        }
+
+        for (const entriesForDay of Object.values(entriesByDay)) {
+          entriesForDay.sort(compareEntries);
+        }
+
+        return entriesByDay;
+      }
+
+      function matchesEntryFilters(
+        entry: Entry,
+        paymentMethodFilter: string,
+        tagFilter: string,
+        searchQuery: string,
+      ) {
+        const matchesPaymentMethod =
+          paymentMethodFilter === "all" ||
+          entry.paymentMethod === paymentMethodFilter ||
+          (entry.type === "transfer" && entry.toMethod === paymentMethodFilter);
+        const matchesTag =
+          tagFilter === "all" || entry.tags.includes(tagFilter);
+
+        if (!matchesPaymentMethod || !matchesTag) return false;
+        if (!searchQuery) return true;
+
+        const searchableText = [
+          entry.title,
+          entry.merchant,
+          entry.memo,
+          ...entry.tags,
+          ...entry.items.flatMap((item) => [item.name, item.detail]),
+        ]
+          .join(" ")
+          .toLowerCase();
+
+        return searchableText.includes(searchQuery);
+      }
+
+      function getEntryFingerprint(entry: Entry) {
+        return JSON.stringify({
+          dayId: entry.dayId,
+          type: entry.type,
+          title: entry.title,
+          merchant: entry.merchant,
+          amount: entry.amount,
+          paymentMethod: entry.paymentMethod,
+          toMethod: entry.toMethod,
+          excluded: entry.excluded,
+          tags: [...entry.tags].sort(),
+          items: entry.items.map((item) => ({
+            name: item.name,
+            detail: item.detail,
+          })),
+          memo: entry.memo,
+        });
+      }
 
       const RECEIPT_EXAMPLE = `#영수증 (26.09.27)
 
@@ -801,6 +898,7 @@
         items: [],
         memo: "",
       });
+
       function PaymentBadge({ id }: { id: PaymentMethodId }) {
         const paymentMethod = getPaymentMethod(id);
         return (
@@ -813,6 +911,7 @@
           </span>
         );
       }
+
       type IconButtonProps = Omit<
         React.ComponentPropsWithoutRef<"button">,
         "children"
@@ -834,6 +933,7 @@
           </button>
         );
       }
+
       type ModalProps = {
         title: string;
         subtitle?: string;
@@ -849,54 +949,69 @@
         onClose,
         wide = false,
       }: ModalProps) {
-        const box = useRef<HTMLDivElement>(null);
+        const dialog = useRef<HTMLDivElement>(null);
         const closeRef = useRef(onClose);
+
         closeRef.current = onClose;
+
         useEffect(() => {
-          const old = document.activeElement as HTMLElement;
-          const overflow = document.body.style.overflow;
+          const previouslyFocusedElement =
+            document.activeElement as HTMLElement;
+          const previousOverflow = document.body.style.overflow;
+
           document.body.style.overflow = "hidden";
-          box.current?.focus();
-          const key = (e: KeyboardEvent) => {
+          dialog.current?.focus();
+
+          function handleKeyDown(event: KeyboardEvent) {
             if (
               Array.from(document.querySelectorAll('[role="dialog"]')).at(
                 -1,
-              ) !== box.current
-            )
+              ) !== dialog.current
+            ) {
               return;
-            if (e.key === "Escape") closeRef.current();
-            if (e.key === "Tab") {
-              const nodes = Array.from(
-                box.current?.querySelectorAll<HTMLElement>(
+            }
+
+            if (event.key === "Escape") {
+              closeRef.current();
+              return;
+            }
+
+            if (event.key === "Tab") {
+              const focusableElements = Array.from(
+                dialog.current?.querySelectorAll<HTMLElement>(
                   'button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]',
                 ) || [],
               );
-              const first = nodes[0],
-                last = nodes.at(-1);
+              const firstFocusableElement = focusableElements[0];
+              const lastFocusableElement = focusableElements.at(-1);
+
               if (
-                e.shiftKey &&
-                (document.activeElement === first ||
-                  document.activeElement === box.current)
+                event.shiftKey &&
+                (document.activeElement === firstFocusableElement ||
+                  document.activeElement === dialog.current)
               ) {
-                e.preventDefault();
-                last?.focus();
+                event.preventDefault();
+                lastFocusableElement?.focus();
               } else if (
-                !e.shiftKey &&
-                (document.activeElement === last ||
-                  document.activeElement === box.current)
+                !event.shiftKey &&
+                (document.activeElement === lastFocusableElement ||
+                  document.activeElement === dialog.current)
               ) {
-                e.preventDefault();
-                first?.focus();
+                event.preventDefault();
+                firstFocusableElement?.focus();
               }
             }
-          };
-          document.addEventListener("keydown", key);
+          }
+
+          document.addEventListener("keydown", handleKeyDown);
+
           return () => {
-            document.body.style.overflow = overflow;
-            document.removeEventListener("keydown", key);
-            old?.focus();
+            document.body.style.overflow = previousOverflow;
+            document.removeEventListener("keydown", handleKeyDown);
+            previouslyFocusedElement?.focus();
           };
         }, []);
+
         return (
           <div
             className="modal-shade fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6"
@@ -905,12 +1020,15 @@
             }}
           >
             <div
-              ref={box}
+              ref={dialog}
               tabIndex={-1}
               role="dialog"
               aria-modal="true"
               aria-labelledby="modal-title"
-              className={`modal-box bg-white rounded-2xl shadow-2xl w-full flex flex-col max-h-[92dvh] outline-none ${wide ? "max-w-2xl" : "max-w-lg"}`}
+              className={cn(
+                "modal-box bg-white rounded-2xl shadow-2xl w-full flex flex-col max-h-[92dvh] outline-none",
+                wide ? "max-w-2xl" : "max-w-lg",
+              )}
             >
               <div className="flex justify-between items-start p-5 sm:p-6 border-b border-slate-100">
                 <div>
@@ -982,10 +1100,12 @@
             setError("올바른 날짜를 입력해 주세요.");
             return;
           }
+
           if (!Number.isSafeInteger(form.amount) || form.amount <= 0) {
             setError("금액은 1엔 이상의 정수로 입력해 주세요.");
             return;
           }
+
           if (
             form.type === "transfer" &&
             form.paymentMethod === form.toMethod
@@ -1005,16 +1125,16 @@
                 ...new Set(
                   tagText
                     .split(/[,#\n]/)
-                    .map((t) => t.trim())
+                    .map((tag) => tag.trim())
                     .filter(Boolean),
                 ),
               ],
               items: form.items
-                .filter((i) => i.name.trim())
-                .map((i) => ({
-                  ...i,
-                  name: i.name.trim(),
-                  detail: i.detail.trim(),
+                .filter((item) => item.name.trim())
+                .map((item) => ({
+                  ...item,
+                  name: item.name.trim(),
+                  detail: item.detail.trim(),
                 })),
             });
           } catch (caughtError) {
@@ -1034,7 +1154,12 @@
                     type="button"
                     key={type}
                     onClick={() => updateForm("type", type)}
-                    className={`flex-1 flex justify-center items-center gap-2 rounded-lg py-2.5 text-xs font-semibold ${form.type === type ? "bg-white shadow-sm text-brand" : "text-slate-400"}`}
+                    className={cn(
+                      "flex-1 flex justify-center items-center gap-2 rounded-lg py-2.5 text-xs font-semibold",
+                      form.type === type
+                        ? "bg-white shadow-sm text-brand"
+                        : "text-slate-400",
+                    )}
                   >
                     <Icon size={14} />
                     {label}
@@ -1101,7 +1226,10 @@
                 </div>
               )}
               <div
-                className={`grid gap-3 ${form.type === "transfer" ? "grid-cols-2" : ""}`}
+                className={cn(
+                  "grid gap-3",
+                  form.type === "transfer" && "grid-cols-2",
+                )}
               >
                 <div>
                   <label htmlFor="from-method">
@@ -1193,7 +1321,9 @@
                           onClick={() =>
                             updateForm(
                               "items",
-                              form.items.filter((i) => i.id !== item.id),
+                              form.items.filter(
+                                (candidate) => candidate.id !== item.id,
+                              ),
                             )
                           }
                         >
@@ -1352,10 +1482,11 @@
                       className="hidden"
                       accept=".txt,text/plain"
                       onChange={async (e) => {
-                        const f = e.target.files?.[0];
-                        if (f) {
+                        const file = e.target.files?.[0];
+
+                        if (file) {
                           try {
-                            setText(await f.text());
+                            setText(await file.text());
                           } catch {
                             setError("파일을 읽지 못했습니다.");
                           }
@@ -1380,8 +1511,11 @@
                   <div className="flex justify-between items-center bg-slate-50 rounded-xl p-4">
                     <div>
                       <p className="font-semibold text-sm">
-                        {new Set(parsed.entries.map((e) => e.dayId)).size}일 ·{" "}
-                        {parsed.entries.length}건
+                        {
+                          new Set(parsed.entries.map((entry) => entry.dayId))
+                            .size
+                        }
+                        일 · {parsed.entries.length}건
                       </p>
                       <p className="text-[11px] muted mt-1">
                         가져오기 미리보기
@@ -1392,20 +1526,22 @@
                     </span>
                   </div>
                   <div className="max-h-44 overflow-auto scrollbar space-y-2">
-                    {parsed.entries.map((e) => (
+                    {parsed.entries.map((entry) => (
                       <div
-                        key={e.id}
+                        key={entry.id}
                         className="flex gap-2 justify-between text-xs py-1"
                       >
                         <div className="min-w-0">
                           <span className="text-slate-400 mr-2">
-                            {e.dayId.slice(5).replace("-", "/")}
+                            {entry.dayId.slice(5).replace("-", "/")}
                           </span>
-                          {e.title}{" "}
-                          <span className="text-slate-400">{e.merchant}</span>
+                          {entry.title}{" "}
+                          <span className="text-slate-400">
+                            {entry.merchant}
+                          </span>
                         </div>
                         <span className="num whitespace-nowrap">
-                          {formatYen(e.amount)}
+                          {formatYen(entry.amount)}
                         </span>
                       </div>
                     ))}
@@ -1415,8 +1551,8 @@
                       role="alert"
                       className="rounded-xl bg-red-50 text-red-500 text-xs p-3 space-y-1"
                     >
-                      {parsed.errors.map((e, i) => (
-                        <p key={i}>{e}</p>
+                      {parsed.errors.map((error, index) => (
+                        <p key={index}>{error}</p>
                       ))}
                       <p className="font-semibold pt-1">
                         위 내용을 수정한 뒤 가져올 수 있습니다.
@@ -1493,11 +1629,13 @@
         const [confirmation, setConfirmation] = useState<Confirmation | null>(
           null,
         );
-        const client = useRef<CloudClient | null>(null);
+        const client = useRef<ClxDBWithUI | null>(null);
         const unsubs = useRef<(() => void)[]>([]);
         const [scrollTarget, setScrollTarget] = useState("");
+
         useEffect(() => {
           let active = true;
+
           (async () => {
             try {
               const id = localStorage.getItem("resito-storage") || "local";
@@ -1518,8 +1656,10 @@
             active = false;
           };
         }, []);
+
         useEffect(() => {
           if (!ready) return;
+
           const subscription = liveQuery(() =>
             backend.documents.toArray(),
           ).subscribe({
@@ -1531,13 +1671,17 @@
           });
           return () => subscription.unsubscribe();
         }, [ready, revision]);
+
         useEffect(() => {
           if (!toast) return;
+
           const timer = setTimeout(() => setToast(""), 3500);
           return () => clearTimeout(timer);
         }, [toast]);
+
         useEffect(() => {
           if (!scrollTarget) return;
+
           const id = requestAnimationFrame(() => {
             document.getElementById("day-" + scrollTarget)?.scrollIntoView({
               behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -1549,6 +1693,7 @@
           });
           return () => cancelAnimationFrame(id);
         }, [scrollTarget, view, month]);
+
         const entries = useMemo(
           () =>
             docs
@@ -1559,10 +1704,11 @@
               .map((document) => document.data),
           [docs],
         );
+
         const monthEntries = useMemo(
           () =>
             entries
-              .filter((e) => e.dayId.startsWith(month))
+              .filter((entry) => entry.dayId.startsWith(month))
               .sort(
                 (first, second) =>
                   first.dayId.localeCompare(second.dayId) ||
@@ -1570,108 +1716,118 @@
               ),
           [entries, month],
         );
+
         const purchases = monthEntries.filter(
-          (e) => e.type === "purchase" && !e.excluded,
+          (entry) => entry.type === "purchase" && !entry.excluded,
         );
         const monthTotal = getPurchaseTotal(monthEntries);
-        const activeDays = new Set(purchases.map((e) => e.dayId)).size;
+        const activeDays = new Set(purchases.map((entry) => entry.dayId)).size;
+
         const monthDate = parseDate(month + "-01");
-        const year = monthDate.getFullYear(),
-          mon = monthDate.getMonth();
+        const year = monthDate.getFullYear();
+        const mon = monthDate.getMonth();
         const monthDays = new Date(year, mon + 1, 0).getDate();
         const offset = new Date(year, mon, 1).getDay();
-        const dayTotals: Record<string, number> = {};
-        monthEntries.forEach(
-          (e) =>
-            (dayTotals[e.dayId] =
-              (dayTotals[e.dayId] || 0) +
-              (e.type === "purchase" && !e.excluded ? e.amount : 0)),
-        );
+
+        const dayTotals = getPurchaseTotalsByDay(monthEntries);
         const tags = Array.from(
-          new Set(monthEntries.flatMap((e) => e.tags)),
+          new Set(monthEntries.flatMap((entry) => entry.tags)),
         ).sort((a, b) => a.localeCompare(b, "ko"));
-        const visible = monthEntries.filter(
-          (e) =>
-            (filter === "all" ||
-              e.paymentMethod === filter ||
-              (e.type === "transfer" && e.toMethod === filter)) &&
-            (tagFilter === "all" || e.tags.includes(tagFilter)) &&
-            (!search ||
-              [
-                e.title,
-                e.merchant,
-                e.memo,
-                ...e.tags,
-                ...e.items.flatMap((i) => [i.name, i.detail]),
-              ]
-                .join(" ")
-                .toLowerCase()
-                .includes(search.toLowerCase())),
+
+        const normalizedSearch = search.toLowerCase();
+        const visibleEntries = monthEntries.filter((entry) =>
+          matchesEntryFilters(entry, filter, tagFilter, normalizedSearch),
         );
-        const grouped = useMemo(() => {
-          const map: Record<string, Entry[]> = {};
-          visible.forEach((e) => (map[e.dayId] ??= []).push(e));
-          if (selected.startsWith(month)) map[selected] ??= [];
-          return Object.entries(map).sort(([a], [b]) => a.localeCompare(b));
-        }, [visible, selected, month]);
-        const tagTotals: Record<string, number> = {};
-        purchases.forEach((e) =>
-          (e.tags.length ? e.tags : ["미분류"]).forEach(
-            (t) => (tagTotals[t] = (tagTotals[t] || 0) + e.amount),
-          ),
+
+        const groupedEntries = useMemo(() => {
+          const entriesByDay = getEntriesByDay(visibleEntries);
+
+          if (selected.startsWith(month)) {
+            entriesByDay[selected] ??= [];
+          }
+
+          return Object.entries(entriesByDay).sort(([firstDay], [secondDay]) =>
+            firstDay.localeCompare(secondDay),
+          );
+        }, [visibleEntries, selected, month]);
+
+        const sortedEntriesByDay = useMemo(
+          () => getEntriesByDay(entries),
+          [entries],
         );
+
+        const tagTotals = getTagTotals(purchases);
         const rankedTags = Object.entries(tagTotals).sort(
           (a, b) => b[1] - a[1],
         );
+
         const allMonths = Array.from(
-          new Set([month, ...entries.map((e) => e.dayId.slice(0, 7))]),
+          new Set([month, ...entries.map((entry) => entry.dayId.slice(0, 7))]),
         )
           .sort()
           .reverse();
-        const pending = docs.filter((d) => d.seq === -1).length;
+        const pending = docs.filter((document) => document.seq === -1).length;
+
         function changeMonth(value: string) {
           if (!/^\d{4}-\d{2}$/.test(value) || !isValidDate(value + "-01")) {
             return;
           }
+
           setMonth(value);
           setSelected(value == today.slice(0, 7) ? today : value + "-01");
           setTagFilter("all");
         }
-        function stepMonth(n: number) {
-          changeMonth(getDateKey(new Date(year, mon + n, 1)).slice(0, 7));
+
+        function stepMonth(monthOffset: number) {
+          changeMonth(
+            getDateKey(new Date(year, mon + monthOffset, 1)).slice(0, 7),
+          );
         }
+
         function selectDay(day: string) {
           setSelected(day);
           setSearch("");
           setFilter("all");
           setTagFilter("all");
+
           if (matchMedia("(max-width: 767px)").matches) setView("list");
+
           setScrollTarget(day);
         }
-        const notify = (s: string) => setToast(s);
+
+        const notify = (message: string) => setToast(message);
+
         function dayChanges(days: string[]) {
           return [...new Set(days)]
             .filter(Boolean)
             .map((day) => ({ id: "day:" + day, data: { id: day, date: day } }));
         }
+
         async function saveEntry(entry: Entry) {
           setBusy(true);
+
           try {
-            const old = entries.find((e) => e.id === entry.id);
+            const old = entries.find((candidate) => candidate.id === entry.id);
             const sameDay = entries.filter(
-              (e) => e.dayId === entry.dayId && e.id !== entry.id,
+              (candidate) =>
+                candidate.dayId === entry.dayId && candidate.id !== entry.id,
             );
             const saved = {
               ...entry,
               order:
                 !old || old.dayId !== entry.dayId
-                  ? Math.max(-1, ...sameDay.map((e) => e.order)) + 1
+                  ? Math.max(
+                      -1,
+                      ...sameDay.map((candidate) => candidate.order),
+                    ) + 1
                   : old.order,
             };
+
             await backend.stage([
               ...dayChanges([entry.dayId]),
               { id: "entry:" + saved.id, data: saved },
             ]);
+
             setMonth(entry.dayId.slice(0, 7));
             setSelected(entry.dayId);
             setEditor(null);
@@ -1680,6 +1836,7 @@
             setBusy(false);
           }
         }
+
         function deleteEntry(entry: Entry) {
           setConfirmation({
             title: "이 기록을 삭제할까요?",
@@ -1688,24 +1845,29 @@
               await backend.stage([
                 { id: "entry:" + entry.id, data: entry, del: true },
               ]);
+
               setEditor(null);
               notify("기록을 삭제했습니다.");
             },
           });
         }
+
         async function reorder(entry: Entry, direction: number) {
           const day = entries
             .filter((candidate) => candidate.dayId === entry.dayId)
             .sort(compareEntries);
-          const index = day.findIndex((e) => e.id === entry.id);
+          const index = day.findIndex((candidate) => candidate.id === entry.id);
           const target = index + direction;
+
           if (target < 0 || target >= day.length) return;
+
           [day[index], day[target]] = [day[target], day[index]];
+
           try {
             await backend.stage(
-              day.map((e, i) => ({
-                id: "entry:" + e.id,
-                data: { ...e, order: i },
+              day.map((dayEntry, index) => ({
+                id: "entry:" + dayEntry.id,
+                data: { ...dayEntry, order: index },
               })),
             );
           } catch (caughtError) {
@@ -1714,66 +1876,76 @@
             );
           }
         }
-        const fingerprint = (e: Entry) =>
-          JSON.stringify([
-            e.dayId,
-            e.type,
-            e.title,
-            e.merchant,
-            e.amount,
-            e.paymentMethod,
-            e.toMethod,
-            e.excluded,
-            [...e.tags].sort(),
-            e.items.map((i) => [i.name, i.detail]),
-            e.memo,
-          ]);
-        async function importEntries(incoming: Entry[], skip: boolean) {
+
+        async function importEntries(
+          incoming: Entry[],
+          skipDuplicates: boolean,
+        ) {
           setBusy(true);
+
           try {
-            const remaining = new Map<string, number>();
-            entries.forEach((e) => {
-              const key = fingerprint(e);
-              remaining.set(key, (remaining.get(key) || 0) + 1);
-            });
-            const next: Record<string, number> = {};
-            entries.forEach(
-              (e) => (next[e.dayId] = Math.max(next[e.dayId] ?? -1, e.order)),
-            );
-            const added: Entry[] = [];
-            for (const e of incoming) {
-              const key = fingerprint(e),
-                count = remaining.get(key) || 0;
-              if (skip && count > 0) {
-                remaining.set(key, count - 1);
+            const existingEntryCounts = new Map<string, number>();
+            const nextOrderByDay: Record<string, number> = {};
+            const addedEntries: Entry[] = [];
+
+            for (const entry of entries) {
+              const fingerprint = getEntryFingerprint(entry);
+              const count = existingEntryCounts.get(fingerprint) ?? 0;
+
+              existingEntryCounts.set(fingerprint, count + 1);
+              nextOrderByDay[entry.dayId] = Math.max(
+                nextOrderByDay[entry.dayId] ?? -1,
+                entry.order,
+              );
+            }
+
+            for (const entry of incoming) {
+              const fingerprint = getEntryFingerprint(entry);
+              const existingCount = existingEntryCounts.get(fingerprint) ?? 0;
+
+              if (skipDuplicates && existingCount > 0) {
+                existingEntryCounts.set(fingerprint, existingCount - 1);
                 continue;
               }
-              next[e.dayId] = (next[e.dayId] ?? -1) + 1;
-              added.push({ ...e, id: createId(), order: next[e.dayId] });
+
+              const nextOrder = (nextOrderByDay[entry.dayId] ?? -1) + 1;
+              nextOrderByDay[entry.dayId] = nextOrder;
+              addedEntries.push({
+                ...entry,
+                id: createId(),
+                order: nextOrder,
+              });
             }
+
             await backend.stage([
-              ...dayChanges(added.map((e) => e.dayId)),
-              ...added.map((e) => ({ id: "entry:" + e.id, data: e })),
+              ...dayChanges(addedEntries.map((entry) => entry.dayId)),
+              ...addedEntries.map((entry) => ({
+                id: "entry:" + entry.id,
+                data: entry,
+              })),
             ]);
-            if (added.length) {
-              setMonth(added[0].dayId.slice(0, 7));
-              setSelected(added[0].dayId);
+
+            if (addedEntries.length) {
+              setMonth(addedEntries[0].dayId.slice(0, 7));
+              setSelected(addedEntries[0].dayId);
             }
+
             setImportOpen(false);
             notify(
-              `${added.length}건을 가져왔습니다.${incoming.length > added.length ? ` 중복 ${incoming.length - added.length}건 제외` : ""}`,
+              `${addedEntries.length}건을 가져왔습니다.${incoming.length > addedEntries.length ? ` 중복 ${incoming.length - addedEntries.length}건 제외` : ""}`,
             );
           } finally {
             setBusy(false);
           }
         }
+
         function exportData() {
           const content = JSON.stringify(
             {
               app: "resito",
               version: 1,
               exportedAt: new Date().toISOString(),
-              entries: entries.sort(
+              entries: [...entries].sort(
                 (first, second) =>
                   first.dayId.localeCompare(second.dayId) ||
                   compareEntries(first, second),
@@ -1782,39 +1954,39 @@
             null,
             2,
           );
+
           const url = URL.createObjectURL(
             new Blob([content], { type: "application/json" }),
           );
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `resito-${today}.json`;
-          a.click();
+          const downloadLink = document.createElement("a");
+
+          downloadLink.href = url;
+          downloadLink.download = `resito-${today}.json`;
+          downloadLink.click();
+
           setTimeout(() => URL.revokeObjectURL(url), 1000);
           notify("전체 기록을 내보냈습니다.");
         }
-        function validateBackup(data: unknown): Entry[] {
-          if (
-            !isRecord(data) ||
-            data.app !== "resito" ||
-            data.version !== 1 ||
-            !Array.isArray(data.entries)
-          ) {
-            throw new Error("resi.to 백업 파일이 아닙니다.");
-          }
 
-          if (!data.entries.every(isBackupEntry)) {
+        function validateBackup(data: unknown): Entry[] {
+          const result = backupSchema.safeParse(data);
+
+          if (!result.success) {
             throw new Error("백업 파일에 올바르지 않은 기록이 있습니다.");
           }
 
-          return data.entries.map((entry) => ({
+          return result.data.entries.map((entry) => ({
             ...entry,
             items: entry.items.map((item) => ({ ...item, id: createId() })),
           }));
         }
+
         async function restoreFile(file?: File) {
           if (!file) return;
+
           try {
             const restored = validateBackup(JSON.parse(await file.text()));
+
             setConfirmation({
               title: "백업 기록을 가져올까요?",
               message: `${restored.length}건을 현재 저장소에 추가합니다. 동일한 기록은 건너뜁니다.`,
@@ -1824,14 +1996,17 @@
             setError("백업을 읽지 못했습니다: " + getErrorMessage(caughtError));
           }
         }
+
         async function connectCloud() {
           if (syncing) return;
+
           setSyncing(true);
           setSettings(false);
+
           try {
             const { startClxDBWithUI } = await import("clxdb/ui");
             const next = new ReceiptBackend();
-            const c = await startClxDBWithUI({
+            const clxdb = await startClxDBWithUI({
               database: next,
               ui: {
                 theme: "light",
@@ -1840,29 +2015,36 @@
                 syncIndicator: true,
               },
             });
-            if (!c) {
+
+            if (!clxdb) {
               next.close();
               return;
             }
+
             unsubs.current.forEach((fn) => fn());
             client.current?.destroy();
+
             if (!next.db) {
               throw new Error("동기화 저장소를 초기화하지 못했습니다.");
             }
+
             backend.close();
             backend.db = next.db;
             backend.listeners = next.listeners; // 두 객체가 같은 Dexie와 알림 집합을 사용합니다.
-            client.current = c as CloudClient;
+            client.current = clxdb as ClxDBWithUI;
+
             const dbName = next.db.name.replace("resito_clxdb_", "");
             localStorage.setItem("resito-storage", dbName);
             setStorage(dbName);
             setCloud(true);
-            setRevision((r) => r + 1);
+            setRevision((currentRevision) => currentRevision + 1);
+
             unsubs.current = [
-              c.on("syncComplete", () => {
-                setRevision((r) => r + 1);
+              clxdb.on("syncComplete", () => {
+                setRevision((currentRevision) => currentRevision + 1);
               }),
             ];
+
             notify("동기화 저장소에 연결했습니다.");
           } catch (caughtError) {
             setError(
@@ -1872,15 +2054,19 @@
             setSyncing(false);
           }
         }
+
         async function syncNow() {
           setSettings(false);
           setSyncing(true);
+
           try {
-            const cloudClient = client.current;
-            if (!cloudClient) {
+            const clxdb = client.current;
+
+            if (!clxdb) {
               throw new Error("연결된 동기화 저장소가 없습니다.");
             }
-            await cloudClient.sync();
+
+            await clxdb.sync();
             notify("동기화가 완료되었습니다.");
           } catch (caughtError) {
             setError("동기화하지 못했습니다: " + getErrorMessage(caughtError));
@@ -1888,20 +2074,24 @@
             setSyncing(false);
           }
         }
+
         async function localStorageMode() {
           unsubs.current.forEach((fn) => fn());
           unsubs.current = [];
           client.current?.destroy();
           client.current = null;
+
           setReady(false);
           await backend.initialize("local");
+
           localStorage.setItem("resito-storage", "local");
           setStorage("local");
           setCloud(false);
           setDocs([]);
-          setRevision((r) => r + 1);
+          setRevision((currentRevision) => currentRevision + 1);
           setReady(true);
           setSettings(false);
+
           notify("이 브라우저의 로컬 저장소를 열었습니다.");
         }
 
@@ -1936,7 +2126,13 @@
                       <button
                         key={navigationView}
                         onClick={() => setView(navigationView)}
-                        className={`flex items-center gap-2 px-5 h-full border-b-2 text-xs font-semibold ${view === navigationView || (view === "list" && navigationView === "calendar") ? "border-brand text-brand" : "border-transparent text-slate-400"}`}
+                        className={cn(
+                          "flex items-center gap-2 px-5 h-full border-b-2 text-xs font-semibold",
+                          view === navigationView ||
+                            (view === "list" && navigationView === "calendar")
+                            ? "border-brand text-brand"
+                            : "border-transparent text-slate-400",
+                        )}
                       >
                         <Icon size={15} />
                         {label}
@@ -1953,7 +2149,10 @@
                       aria-label="저장소 및 백업 설정"
                     >
                       <span
-                        className={`w-1.5 h-1.5 rounded-full ${cloud ? "bg-emerald-400" : "bg-slate-300"}`}
+                        className={cn(
+                          "w-1.5 h-1.5 rounded-full",
+                          cloud ? "bg-emerald-400" : "bg-slate-300",
+                        )}
                       />
                       <span className="hidden sm:inline">
                         {cloud
@@ -2127,8 +2326,8 @@
                   <CalendarDays size={14} className="text-slate-400" />
                 </label>
                 <div className="ml-auto text-[11px] text-slate-400 hidden sm:block">
-                  {new Set(monthEntries.map((e) => e.dayId)).size}일의 기록{" "}
-                  <span className="mx-2 text-slate-200">/</span> 총{" "}
+                  {new Set(monthEntries.map((entry) => entry.dayId)).size}일의
+                  기록 <span className="mx-2 text-slate-200">/</span> 총{" "}
                   {monthEntries.length}건
                 </div>
               </div>
@@ -2166,7 +2365,7 @@
                       </span>
                     </>
                   }
-                  note={`합계 제외 ${monthEntries.filter((e) => e.type === "purchase" && e.excluded).length}건 · 이체 ${monthEntries.filter((e) => e.type === "transfer").length}건`}
+                  note={`합계 제외 ${monthEntries.filter((entry) => entry.type === "purchase" && entry.excluded).length}건 · 이체 ${monthEntries.filter((entry) => entry.type === "transfer").length}건`}
                   icon={ReceiptText}
                   color="#77a78d"
                 />
@@ -2341,15 +2540,15 @@
                   <div className="panel p-6 lg:col-span-2">
                     <h3 className="font-bold text-sm mb-4">월별 결제 합계</h3>
                     <div className="divide-y divide-slate-100">
-                      {allMonths.map((m) => (
+                      {allMonths.map((availableMonth) => (
                         <button
-                          key={m}
-                          onClick={() => changeMonth(m)}
+                          key={availableMonth}
+                          onClick={() => changeMonth(availableMonth)}
                           className="w-full flex justify-between items-center py-4 text-xs hover:text-brand"
                         >
                           <span className="flex items-center gap-2">
-                            {m.replace("-", "년 ")}월
-                            {m === month && (
+                            {availableMonth.replace("-", "년 ")}월
+                            {availableMonth === month && (
                               <span className="pill bg-indigo-50 text-brand">
                                 선택한 달
                               </span>
@@ -2359,7 +2558,7 @@
                             {formatYen(
                               getPurchaseTotal(
                                 entries.filter((entry) =>
-                                  entry.dayId.startsWith(m),
+                                  entry.dayId.startsWith(availableMonth),
                                 ),
                               ),
                             )}
@@ -2372,7 +2571,10 @@
               ) : (
                 <div className="grid md:grid-cols-[340px_minmax(0,1fr)] lg:grid-cols-[370px_minmax(0,1fr)] gap-6 items-start">
                   <aside
-                    className={`${view === "list" ? "hidden md:block" : ""} md:sticky md:top-[100px] space-y-4`}
+                    className={cn(
+                      "md:sticky md:top-[100px] space-y-4",
+                      view === "list" && "hidden md:block",
+                    )}
                   >
                     <section className="panel p-5 sm:p-6">
                       <div className="flex items-center justify-between mb-6">
@@ -2388,7 +2590,14 @@
                         {WEEKDAYS.map((weekday, weekdayIndex) => (
                           <span
                             key={weekday}
-                            className={`text-center text-[10px] pb-2 ${weekdayIndex === 0 ? "text-[#d9979e]" : weekdayIndex === 6 ? "text-[#91a5cd]" : "text-slate-400"}`}
+                            className={cn(
+                              "text-center text-[10px] pb-2",
+                              weekdayIndex === 0
+                                ? "text-[#d9979e]"
+                                : weekdayIndex === 6
+                                  ? "text-[#91a5cd]"
+                                  : "text-slate-400",
+                            )}
                           >
                             {weekday}
                           </span>
@@ -2418,10 +2627,22 @@
                                 aria-label={`${mon + 1}월 ${day}일, ${formatYen(sum)}`}
                                 aria-pressed={selected === date}
                                 onClick={() => selectDay(date)}
-                                className={`calendar-day ${selected === date ? "selected" : ""} ${date === today ? "today" : ""}`}
+                                className={cn(
+                                  "calendar-day",
+                                  selected === date && "selected",
+                                  date === today && "today",
+                                )}
                               >
                                 <span
-                                  className={`text-xs ${selected !== date ? (i % 7 === 0 ? "text-[#cd9098]" : i % 7 === 6 ? "text-[#8ba0c5]" : "text-slate-600") : ""}`}
+                                  className={cn(
+                                    "text-xs",
+                                    selected !== date &&
+                                      (i % 7 === 0
+                                        ? "text-[#cd9098]"
+                                        : i % 7 === 6
+                                          ? "text-[#8ba0c5]"
+                                          : "text-slate-600"),
+                                  )}
                                 >
                                   {day}
                                 </span>
@@ -2432,10 +2653,15 @@
                                 ) : (
                                   <span className="h-[11px] flex items-center">
                                     {monthEntries.some(
-                                      (e) => e.dayId === date,
+                                      (entry) => entry.dayId === date,
                                     ) && (
                                       <span
-                                        className={`w-1 h-1 rounded-full ${selected === date ? "bg-indigo-200" : "bg-slate-300"}`}
+                                        className={cn(
+                                          "w-1 h-1 rounded-full",
+                                          selected === date
+                                            ? "bg-indigo-200"
+                                            : "bg-slate-300",
+                                        )}
                                       />
                                     )}
                                   </span>
@@ -2511,7 +2737,10 @@
                     </button>
                   </aside>
                   <section
-                    className={`${view === "calendar" ? "hidden md:block" : ""} min-w-0`}
+                    className={cn(
+                      "min-w-0",
+                      view === "calendar" && "hidden md:block",
+                    )}
                     aria-label="월 전체 결제내역"
                   >
                     <div className="flex items-center justify-between mb-4">
@@ -2520,7 +2749,7 @@
                           {mon + 1}월의 기록
                         </h3>
                         <span className="text-[10px] bg-[#e9ecf4] text-slate-500 py-0.5 px-1.5 rounded">
-                          {visible.length}
+                          {visibleEntries.length}
                         </span>
                       </div>
                       <span className="text-[10px] text-slate-400 flex items-center gap-1">
@@ -2566,9 +2795,9 @@
                           onChange={(e) => setTagFilter(e.target.value)}
                         >
                           <option value="all">모든 태그</option>
-                          {tags.map((t) => (
-                            <option key={t} value={t}>
-                              {t}
+                          {tags.map((tag) => (
+                            <option key={tag} value={tag}>
+                              {tag}
                             </option>
                           ))}
                         </select>
@@ -2579,11 +2808,12 @@
                         저장소를 불러오는 중…
                       </div>
                     ) : (
-                      grouped.map(([day, dayEntries]) => {
-                        const dayAll = monthEntries.filter(
-                          (e) => e.dayId === day,
-                        );
-                        const d = parseDate(day);
+                      groupedEntries.map(([day, dayEntries]) => {
+                        const allDayEntries = sortedEntriesByDay[day] ?? [];
+                        const date = parseDate(day);
+                        const firstEntryId = allDayEntries[0]?.id;
+                        const lastEntryId = allDayEntries.at(-1)?.id;
+
                         return (
                           <section
                             key={day}
@@ -2593,14 +2823,19 @@
                             <div className="flex justify-between items-center mb-3">
                               <div className="flex items-center gap-2">
                                 <span
-                                  className={`w-8 h-8 flex items-center justify-center rounded-lg font-semibold num text-[15px] ${day === selected ? "bg-[#e9edfd] text-brand" : "bg-[#eceff4] text-slate-500"}`}
+                                  className={cn(
+                                    "w-8 h-8 flex items-center justify-center rounded-lg font-semibold num text-[15px]",
+                                    day === selected
+                                      ? "bg-[#e9edfd] text-brand"
+                                      : "bg-[#eceff4] text-slate-500",
+                                  )}
                                 >
-                                  {d.getDate()}
+                                  {date.getDate()}
                                 </span>
                                 <h4 className="text-xs font-semibold">
-                                  {mon + 1}월 {d.getDate()}일{" "}
+                                  {mon + 1}월 {date.getDate()}일{" "}
                                   <span className="text-slate-400 font-normal ml-1">
-                                    {WEEKDAYS[d.getDay()]}
+                                    {WEEKDAYS[date.getDay()]}
                                     요일
                                   </span>
                                 </h4>
@@ -2612,7 +2847,7 @@
                               </div>
                               <div className="flex items-center gap-1">
                                 <span className="num font-semibold text-sm mr-1">
-                                  {formatYen(getPurchaseTotal(dayAll))}
+                                  {formatYen(getPurchaseTotal(allDayEntries))}
                                 </span>
                                 <IconButton
                                   label={`${day} 기록 추가`}
@@ -2637,18 +2872,8 @@
                                       setEditor({ entry, isNew: false })
                                     }
                                     onReorder={reorder}
-                                    first={
-                                      entries
-                                        .filter((e) => e.dayId === day)
-                                        .sort(compareEntries)[0]?.id ===
-                                      entry.id
-                                    }
-                                    last={
-                                      entries
-                                        .filter((e) => e.dayId === day)
-                                        .sort(compareEntries)
-                                        .at(-1)?.id === entry.id
-                                    }
+                                    first={entry.id === firstEntryId}
+                                    last={entry.id === lastEntryId}
                                   />
                                 ))
                               ) : (
@@ -2659,11 +2884,11 @@
                                     className="mx-auto text-slate-300 mb-3"
                                   />
                                   <p className="text-xs text-slate-400">
-                                    {dayAll.length
+                                    {allDayEntries.length
                                       ? "필터에 맞는 기록이 없습니다."
                                       : "아직 기록이 없는 하루예요."}
                                   </p>
-                                  {!dayAll.length && (
+                                  {!allDayEntries.length && (
                                     <button
                                       onClick={() =>
                                         setEditor({
@@ -2682,7 +2907,7 @@
                             {dayEntries.length > 0 && (
                               <div className="flex flex-wrap gap-x-4 gap-y-1 justify-end mt-3 pr-1">
                                 {PAYMENT_METHODS.filter((paymentMethod) =>
-                                  dayAll.some(
+                                  allDayEntries.some(
                                     (entry) =>
                                       entry.type === "purchase" &&
                                       !entry.excluded &&
@@ -2698,7 +2923,7 @@
                                     <span className="num ml-1">
                                       {formatYen(
                                         getPurchaseTotal(
-                                          dayAll.filter(
+                                          allDayEntries.filter(
                                             (entry) =>
                                               entry.paymentMethod ===
                                               paymentMethod.id,
@@ -2758,7 +2983,12 @@
                   <button
                     key={navigationView}
                     onClick={() => setView(navigationView)}
-                    className={`flex flex-col items-center gap-1 w-20 text-[10px] ${view === navigationView ? "text-brand font-semibold" : "text-slate-400"}`}
+                    className={cn(
+                      "flex flex-col items-center gap-1 w-20 text-[10px]",
+                      view === navigationView
+                        ? "text-brand font-semibold"
+                        : "text-slate-400",
+                    )}
                     aria-current={view === navigationView ? "page" : undefined}
                   >
                     <Icon
@@ -2910,11 +3140,19 @@
         const isTransfer = entry.type === "transfer";
         return (
           <article
-            className={`entry-card panel !rounded-xl px-4 sm:px-5 py-4 ${entry.excluded ? "opacity-65" : ""}`}
+            className={cn(
+              "entry-card panel !rounded-xl px-4 sm:px-5 py-4",
+              entry.excluded && "opacity-65",
+            )}
           >
             <div className="flex items-start gap-3">
               <span
-                className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${isTransfer ? "bg-[#eef3f9] text-[#8a9db6]" : "bg-[#f0f2fc] text-[#8490d4]"}`}
+                className={cn(
+                  "w-9 h-9 rounded-xl flex items-center justify-center shrink-0",
+                  isTransfer
+                    ? "bg-[#eef3f9] text-[#8a9db6]"
+                    : "bg-[#f0f2fc] text-[#8490d4]",
+                )}
               >
                 {isTransfer ? (
                   <ArrowDownUp size={18} strokeWidth={1.7} />
@@ -2935,7 +3173,12 @@
                     </h5>
                   </button>
                   <span
-                    className={`text-[15px] num font-bold whitespace-nowrap leading-5 ${entry.excluded ? "text-slate-400" : isTransfer ? "text-[#7a8da6]" : ""}`}
+                    className={cn(
+                      "text-[15px] num font-bold whitespace-nowrap leading-5",
+                      entry.excluded
+                        ? "text-slate-400"
+                        : isTransfer && "text-[#7a8da6]",
+                    )}
                   >
                     {formatYen(entry.amount)}
                   </span>
