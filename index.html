@@ -7,7 +7,7 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#09090b" />
-    <title>resi.to — 나의 영수증 기록</title>
+    <title>resi-to: 나의 영수증 기록</title>
     <script type="importmap">
       {
         "imports": {
@@ -113,11 +113,9 @@
         resize: vertical;
       }
       label {
-        display: block;
         font-size: 14px;
         font-weight: 500;
         color: #e4e4e7;
-        margin-bottom: 7px;
       }
       label.backup-import {
         display: flex;
@@ -424,23 +422,170 @@
         font-size: 12px;
       }
       .app-header {
-        background: rgb(9 9 11 / 0.9);
-        backdrop-filter: blur(16px);
+        position: fixed;
+        top: max(12px, env(safe-area-inset-top));
+        left: 50%;
+        z-index: 30;
+        width: max-content;
+        max-width: calc(100% - 24px);
+        border: 1px solid rgb(255 255 255 / 0.1);
+        border-radius: 999px;
+        background: rgb(20 20 23 / 0.9);
+        box-shadow: 0 8px 32px rgb(0 0 0 / 0.24);
+        backdrop-filter: blur(24px);
+        transform: translateX(-50%);
+        transition:
+          transform 0.2s ease,
+          opacity 0.2s ease,
+          visibility 0.2s;
+      }
+      .app-header.is-hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+        transform: translate(
+          -50%,
+          calc(-100% - 24px - env(safe-area-inset-top))
+        );
+      }
+      .app-main {
+        padding-top: calc(92px + env(safe-area-inset-top));
+      }
+      .header-inner {
+        width: fit-content;
+        max-width: 100%;
+        min-height: 52px;
+        margin: 0 auto;
+        padding: 0 18px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .brand-link {
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+        color: #fafafa;
+        text-decoration: none;
+      }
+      .brand-logo {
+        display: block;
+        width: 116px;
+        height: 30px;
+      }
+      .header-nav {
+        display: flex;
+        align-self: stretch;
+        gap: 22px;
+        margin: 0 12px 0 16px;
       }
       .nav-tab {
-        border: 1px solid transparent;
-        border-radius: 6px;
+        position: relative;
+        padding: 0 2px;
+        border: 0;
+        background: transparent;
+        color: #8b8b95;
+        font-size: 14px;
+        font-weight: 500;
+        transition: color 0.15s;
+      }
+      .nav-tab::after {
+        content: "";
+        position: absolute;
+        right: 0;
+        bottom: 8px;
+        left: 0;
+        height: 2px;
+        background: #789bff;
+        border-radius: 2px;
+        transform: scaleX(0);
+        transition: transform 0.15s;
+      }
+      .nav-tab:hover {
+        color: #fafafa;
+      }
+      .nav-tab[aria-current="page"] {
+        color: var(--foreground);
+      }
+      .nav-tab[aria-current="page"]::after {
+        transform: scaleX(1);
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .storage-trigger {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        min-height: 32px;
+        padding: 0 7px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #a1a1aa;
+        font-size: 12px;
         transition:
           background 0.15s,
           color 0.15s;
       }
-      .nav-tab:hover {
+      .storage-trigger:hover,
+      .storage-trigger[aria-expanded="true"] {
         background: var(--muted);
+        color: #fafafa;
       }
-      .nav-tab[aria-current="page"] {
-        background: var(--muted);
-        color: var(--foreground);
-        border-color: var(--border);
+      .storage-dot {
+        position: absolute;
+        right: 4px;
+        bottom: 4px;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #fbbf24;
+        box-shadow: 0 0 0 2px var(--background);
+      }
+      .storage-dot.has-error {
+        background: #f87171;
+      }
+      .record-add {
+        min-height: 40px;
+        padding: 0 14px;
+        border-radius: 10px;
+        font-size: 13px;
+      }
+      .record-add {
+        background: #eef2ff;
+        border-color: #eef2ff;
+        color: #171c30;
+        box-shadow: 0 2px 10px rgb(0 0 0 / 0.15);
+      }
+      .record-add:hover {
+        background: #dbe4ff;
+        border-color: #dbe4ff;
+      }
+      @media (max-width: 767px) {
+        .header-inner {
+          min-height: 48px;
+          padding: 0 6px 0 14px;
+          gap: 12px;
+        }
+        .brand-logo {
+          width: 92px;
+          height: 24px;
+        }
+        .header-nav {
+          display: none;
+        }
+        .header-actions {
+          gap: 6px;
+        }
+        .record-add {
+          min-width: 40px;
+          padding: 0 11px;
+        }
       }
       .summary-total {
         border-top-color: var(--brand);
@@ -508,6 +653,7 @@
         Upload,
         Download,
         Cloud,
+        HardDrive,
         Check,
         X,
         Search,
@@ -874,7 +1020,7 @@
 
             🚋 편의점 (LAWSON) // 1,031円
                   - 도시락 (오니기리 벤또)
-                  - 주먹밥 (구! 오니기리 포크타마고)
+                  - 주먹밥 (오니기리 포크타마고)
                   - 탄산수 (윌킨슨 레몬 500mL)
 
             🚋 교통 (린카이선) // 272円
@@ -897,9 +1043,8 @@
             💳 0円
             💴 0円
 
-            => 2,365円`;
+            => 2,365円`.replace(/^ {12}/gm, "");
 
-      // IndexedDB에는 null 인덱스 대신 -1을 저장하고, clxdb 경계에서 null로 변환합니다.
       class ReceiptBackend {
         db: ReceiptDatabase | null = null;
         listeners = new Set<() => void>();
@@ -1102,6 +1247,43 @@
         items: [],
         memo: "",
       });
+
+      function BrandLogo() {
+        return (
+          <svg
+            className="brand-logo"
+            viewBox="0 0 170 44"
+            fill="none"
+            aria-hidden="true"
+          >
+            {/* A torn receipt with a perforated top edge. */}
+            <path
+              d="M5 3h23a6 6 0 0 1 6 6v31l-5-3-5 3-5-3-5 3-5-3-5 3V9a6 6 0 0 1 1-6Z"
+              fill="#789bff"
+            />
+            <path
+              d="M12 9h3m4 0h3m4 0h1"
+              stroke="#dce5ff"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+            {/* Custom-drawn, rounded lowercase wordmark. */}
+            <g
+              stroke="currentColor"
+              strokeWidth="3.3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M51 31V18m0 6c0-5 4-7 8-6" />
+              <path d="M66 24h12c0-9-13-9-13 0 0 8 8 9 12 5" />
+              <path d="M96 19c-3-2-11-2-11 2 0 5 12 2 12 7 0 5-8 5-12 2" />
+              <path d="M105 18v13m10-7h7m10-12v15c0 4 3 5 6 3m-10-12h11" />
+              <path d="M161 24.5c0 9-13 9-13 0s13-9 13 0Z" />
+            </g>
+            <circle cx="105" cy="11.5" r="1.9" fill="#789bff" />
+          </svg>
+        );
+      }
 
       function PaymentBadge({ id }: { id: PaymentMethodId }) {
         const paymentMethod = getPaymentMethod(id);
@@ -1766,7 +1948,7 @@
                   checked={skipDuplicates}
                   onChange={(e) => setSkipDuplicates(e.target.checked)}
                 />
-                이미 가져온 동일한 내역 건너뛰기
+                <span>이미 가져온 동일한 내역 건너뛰기</span>
               </label>
               {error && (
                 <p role="alert" className="text-xs text-red-500">
@@ -1818,6 +2000,7 @@
         const [editor, setEditor] = useState<EditorState | null>(null);
         const [importOpen, setImportOpen] = useState(false);
         const [settings, setSettings] = useState(false);
+        const [headerHidden, setHeaderHidden] = useState(false);
         const [busy, setBusy] = useState(false);
         const [toast, setToast] = useState("");
         const [error, setError] = useState("");
@@ -1831,6 +2014,40 @@
         const client = useRef<ClxDBWithUI | null>(null);
         const unsubs = useRef<(() => void)[]>([]);
         const [scrollTarget, setScrollTarget] = useState("");
+        const storageMenuRef = useRef<HTMLDivElement>(null);
+
+        useEffect(() => {
+          if (!settings) return;
+
+          function handlePointerDown(event: PointerEvent) {
+            if (!storageMenuRef.current?.contains(event.target as Node)) {
+              setSettings(false);
+            }
+          }
+
+          function handleKeyDown(event: KeyboardEvent) {
+            if (event.key === "Escape") setSettings(false);
+          }
+
+          document.addEventListener("pointerdown", handlePointerDown);
+          document.addEventListener("keydown", handleKeyDown);
+          return () => {
+            document.removeEventListener("pointerdown", handlePointerDown);
+            document.removeEventListener("keydown", handleKeyDown);
+          };
+        }, [settings]);
+
+        useEffect(() => {
+          function handleScroll() {
+            const hidden = window.scrollY > 24;
+            setHeaderHidden(hidden);
+            if (hidden) setSettings(false);
+          }
+
+          handleScroll();
+          window.addEventListener("scroll", handleScroll, { passive: true });
+          return () => window.removeEventListener("scroll", handleScroll);
+        }, []);
 
         useEffect(() => {
           let active = true;
@@ -1966,6 +2183,19 @@
           .sort()
           .reverse();
         const pending = docs.filter((document) => document.seq === -1).length;
+        const remoteStorage = Boolean(storage && storage !== "local");
+        const storageNeedsAttention =
+          Boolean(error) || (remoteStorage && !cloud);
+        const storageStatus = error
+          ? `오류: ${error}`
+          : remoteStorage && !cloud
+            ? "저장소 연결 필요"
+            : remoteStorage && pending > 0
+              ? `동기화 대기 ${pending}건`
+              : remoteStorage
+                ? "동기화 완료"
+                : "이 브라우저에 자동 저장";
+        const storageLabel = `${remoteStorage ? "원격 DB" : "로컬 저장소"} · ${storageStatus}`;
 
         function changeMonth(value: string) {
           if (!/^\d{4}-\d{2}$/.test(value) || !isValidDate(value + "-01")) {
@@ -2296,84 +2526,73 @@
 
         return (
           <div className="min-h-screen pb-24 md:pb-8">
-            <header className="app-header border-b border-[#e9ecf2] sticky top-0 z-30">
-              <div className="max-w-[1240px] mx-auto h-16 px-4 sm:px-7 flex items-center justify-between gap-4">
+            <header
+              className={cn("app-header", headerHidden && "is-hidden")}
+              inert={headerHidden}
+            >
+              <div className="header-inner">
                 <a
                   href="#"
                   onClick={(e) => {
                     e.preventDefault();
                     setView("calendar");
                   }}
-                  className="flex items-center gap-2.5 no-underline text-inherit"
+                  className="brand-link"
+                  aria-label="resi-to 홈"
                 >
-                  <div className="h-8 w-8 bg-brand rounded-lg text-white flex items-center justify-center">
-                    <ReceiptText size={19} strokeWidth={1.7} />
-                  </div>
-                  <span className="text-xl font-semibold tracking-[-0.8px]">
-                    resi<span className="text-brand">.to</span>
-                  </span>
+                  <BrandLogo />
                 </a>
-                <nav
-                  aria-label="주 메뉴"
-                  className="hidden md:flex gap-1 items-center mr-auto ml-6"
-                >
-                  {TOP_NAVIGATION.map(
-                    ({ view: navigationView, label, icon: Icon }) => (
-                      <button
-                        key={navigationView}
-                        onClick={() => setView(navigationView)}
-                        className="nav-tab flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-400"
-                        aria-current={
-                          view === navigationView ||
-                          (view === "list" && navigationView === "calendar")
-                            ? "page"
-                            : undefined
-                        }
-                      >
-                        <Icon size={15} />
-                        {label}
-                      </button>
-                    ),
-                  )}
-                </nav>
-                <div className="flex items-center gap-2 sm:gap-3">
-                  <div className="relative">
+                <nav aria-label="주 메뉴" className="header-nav">
+                  {TOP_NAVIGATION.map(({ view: navigationView, label }) => (
                     <button
-                      className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 p-2 rounded-lg hover:bg-slate-100"
+                      key={navigationView}
+                      onClick={() => setView(navigationView)}
+                      className="nav-tab"
+                      aria-current={
+                        view === navigationView ||
+                        (view === "list" && navigationView === "calendar")
+                          ? "page"
+                          : undefined
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </nav>
+                <div className="header-actions">
+                  <div className="relative" ref={storageMenuRef}>
+                    <button
+                      className="storage-trigger"
                       onClick={() => setSettings(!settings)}
                       aria-expanded={settings}
-                      aria-label="저장소 및 백업 설정"
+                      aria-label={`${storageLabel} · 저장소 및 백업 설정`}
+                      title={storageLabel}
                     >
-                      <span
-                        className={cn(
-                          "w-1.5 h-1.5 rounded-full",
-                          cloud ? "bg-emerald-400" : "bg-slate-300",
-                        )}
-                      />
-                      <span className="hidden sm:inline">
-                        {cloud
-                          ? "클라우드 연결됨"
-                          : storage && storage !== "local"
-                            ? "저장소 연결 필요"
-                            : "로컬 저장소"}
-                      </span>
-                      <Cloud size={15} />
+                      {remoteStorage ? (
+                        <Cloud size={18} />
+                      ) : (
+                        <HardDrive size={18} />
+                      )}
+                      {(storageNeedsAttention ||
+                        (remoteStorage && pending > 0)) && (
+                        <span
+                          className={cn(
+                            "storage-dot",
+                            storageNeedsAttention && "has-error",
+                          )}
+                          aria-hidden="true"
+                        />
+                      )}
                     </button>
                     {settings && (
                       <>
-                        <div
-                          className="fixed inset-0 z-30"
-                          onClick={() => setSettings(false)}
-                        />
                         <div className="absolute right-0 top-11 z-40 w-64 panel shadow-xl p-2">
                           <div className="px-3 py-3 border-b border-slate-100 mb-1">
                             <p className="font-semibold text-xs">
                               저장소와 백업
                             </p>
                             <p className="text-[10px] muted mt-1">
-                              {cloud
-                                ? `동기화 대기 ${pending}건`
-                                : "기록은 현재 브라우저에 자동 저장됩니다."}
+                              {storageStatus}
                             </p>
                           </div>
                           {cloud ? (
@@ -2436,30 +2655,11 @@
                       </>
                     )}
                   </div>
-                  <button
-                    className="btn hidden sm:inline-flex"
-                    onClick={() => setImportOpen(true)}
-                    disabled={!ready}
-                  >
-                    <Upload size={13} />
-                    텍스트 가져오기
-                  </button>
-                  <button
-                    className="btn primary"
-                    aria-label="기록 추가"
-                    onClick={() =>
-                      setEditor({ entry: blankEntry(selected), isNew: true })
-                    }
-                    disabled={!ready}
-                  >
-                    <Plus size={15} />
-                    <span className="hidden sm:inline">기록 추가</span>
-                  </button>
                 </div>
               </div>
             </header>
 
-            <main className="max-w-[1240px] mx-auto px-4 sm:px-7 pt-7 sm:pt-9">
+            <main className="app-main max-w-[1240px] mx-auto px-4 sm:px-7">
               {error && (
                 <div
                   role="alert"
@@ -2479,16 +2679,29 @@
                     </h1>
                   </div>
                 </div>
-                <button
-                  onClick={() => {
-                    changeMonth(today.slice(0, 7));
-                    if (view !== "stats") selectDay(today);
-                  }}
-                  className="btn !py-2 !px-3 text-[11px]"
-                >
-                  <CalendarDays size={13} />
-                  오늘
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      changeMonth(today.slice(0, 7));
+                      if (view !== "stats") selectDay(today);
+                    }}
+                    className="btn !min-h-10 !py-2 !px-3 text-[11px]"
+                  >
+                    <CalendarDays size={13} />
+                    오늘
+                  </button>
+                  <button
+                    className="btn record-add"
+                    aria-label="기록 추가"
+                    onClick={() =>
+                      setEditor({ entry: blankEntry(selected), isNew: true })
+                    }
+                    disabled={!ready}
+                  >
+                    <Plus size={15} />
+                    <span className="hidden sm:inline">기록 추가</span>
+                  </button>
+                </div>
               </div>
               <div className="month-toolbar flex items-center gap-2 mb-5">
                 <IconButton label="이전 달" onClick={() => stepMonth(-1)}>
