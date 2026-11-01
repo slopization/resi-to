@@ -550,6 +550,33 @@
       .storage-dot.has-error {
         background: #f87171;
       }
+
+      #root .storage-name-input {
+        min-width: 0;
+        border: 0;
+        border-radius: 0;
+        padding: 0;
+        background: transparent;
+        font-size: 15px;
+        font-weight: 600;
+        line-height: 1.6;
+        box-shadow: none;
+      }
+
+      #root .storage-name-input:focus-visible {
+        outline: none;
+        box-shadow: 0 1px 0 #60a5fa;
+      }
+
+      #storage-details {
+        inset: auto;
+        margin: 0;
+        max-width: none;
+        max-height: none;
+        overflow: visible;
+        color: var(--foreground);
+      }
+
       .record-add {
         min-height: 40px;
         padding: 0 14px;
@@ -654,6 +681,8 @@
         Download,
         Cloud,
         HardDrive,
+        Archive,
+        Ellipsis,
         Check,
         X,
         Search,
@@ -1112,6 +1141,21 @@
       }
       const backend = new ReceiptBackend();
 
+      const isLocalStorage = (id: string) =>
+        id === "local" || id.startsWith("local-");
+
+      const getStorageName = (id: string) =>
+        localStorage.getItem("resito-storage-name:" + id) ||
+        (id === "local" ? "기본 로컬 저장소" : `저장소 ${id.slice(0, 8)}`);
+
+      const getDocumentEntries = (documents: StoredDocument[]) =>
+        documents
+          .filter(
+            (document): document is EntryDocument =>
+              !document.del && document.id.startsWith("entry:"),
+          )
+          .map((document) => document.data);
+
       function parseReceipt(text: string) {
         const entries: Entry[] = [];
         const errors: string[] = [];
@@ -1326,6 +1370,7 @@
         children: React.ReactNode;
         onClose: () => void;
         wide?: boolean;
+        compact?: boolean;
       };
 
       function Modal({
@@ -1334,6 +1379,7 @@
         children,
         onClose,
         wide = false,
+        compact = false,
       }: ModalProps) {
         const dialog = useRef<HTMLDivElement>(null);
         const closeRef = useRef(onClose);
@@ -1416,7 +1462,10 @@
                 wide ? "max-w-2xl" : "max-w-lg",
               )}
             >
-              <div className="flex justify-between items-start p-5 sm:p-6 border-b border-slate-100">
+              <div className={cn(
+                "flex justify-between items-start border-b border-slate-100",
+                compact ? "p-4" : "p-5 sm:p-6",
+              )}>
                 <div>
                   <h2 id="modal-title" className="text-lg font-bold">
                     {title}
@@ -1429,7 +1478,10 @@
                   <X size={18} />
                 </IconButton>
               </div>
-              <div className="p-5 sm:p-6 overflow-y-auto scrollbar">
+              <div className={cn(
+                "overflow-y-auto scrollbar",
+                compact ? "p-3 sm:p-4" : "p-5 sm:p-6",
+              )}>
                 {children}
               </div>
             </div>
@@ -1991,51 +2043,122 @@
       function App() {
         const [ready, setReady] = useState(false);
         const [docs, setDocs] = useState<StoredDocument[]>([]);
+
         const [month, setMonth] = useState(today.slice(0, 7));
         const [selected, setSelected] = useState(today);
         const [view, setView] = useState<View>("calendar");
+        const [scrollTarget, setScrollTarget] = useState("");
+
         const [search, setSearch] = useState("");
         const [filter, setFilter] = useState("all");
         const [tagFilter, setTagFilter] = useState("all");
+
         const [editor, setEditor] = useState<EditorState | null>(null);
         const [importOpen, setImportOpen] = useState(false);
         const [settings, setSettings] = useState(false);
         const [headerHidden, setHeaderHidden] = useState(false);
+        const [confirmation, setConfirmation] = useState<Confirmation | null>(
+          null,
+        );
+
         const [busy, setBusy] = useState(false);
         const [toast, setToast] = useState("");
         const [error, setError] = useState("");
+
         const [revision, setRevision] = useState(0);
         const [cloud, setCloud] = useState(false);
         const [syncing, setSyncing] = useState(false);
         const [storage, setStorage] = useState("");
-        const [confirmation, setConfirmation] = useState<Confirmation | null>(
+        const [storages, setStorages] = useState<string[]>([]);
+        const [storageDetails, setStorageDetails] = useState<string | null>(
           null,
         );
+        const [newStorageName, setNewStorageName] = useState("");
+        const [renamingStorage, setRenamingStorage] = useState<string | null>(null);
+        const [renamedStorageName, setRenamedStorageName] = useState("");
+
         const client = useRef<ClxDBWithUI | null>(null);
         const unsubs = useRef<(() => void)[]>([]);
-        const [scrollTarget, setScrollTarget] = useState("");
         const storageMenuRef = useRef<HTMLDivElement>(null);
 
         useEffect(() => {
           if (!settings) return;
 
+          let active = true;
+
+          Dexie.getDatabaseNames()
+            .then((names) => {
+              if (!active) return;
+
+              const savedIds = names
+                .filter((name) => name.startsWith("resito_clxdb_"))
+                .map((name) => name.slice("resito_clxdb_".length));
+
+              setStorages(
+                [...new Set([storage, ...savedIds])].filter(Boolean),
+              );
+            })
+            .catch((caughtError) => {
+              if (active) setError(getErrorMessage(caughtError));
+            });
+
           function handlePointerDown(event: PointerEvent) {
             if (!storageMenuRef.current?.contains(event.target as Node)) {
-              setSettings(false);
+              setStorageDetails(null);
             }
           }
 
-          function handleKeyDown(event: KeyboardEvent) {
-            if (event.key === "Escape") setSettings(false);
+          document.addEventListener("pointerdown", handlePointerDown);
+
+          return () => {
+            active = false;
+            document.removeEventListener("pointerdown", handlePointerDown);
+          };
+        }, [settings, storage]);
+
+        useEffect(() => {
+          if (!storageDetails) return;
+
+          const menu = document.getElementById("storage-details");
+          const trigger = storageMenuRef.current?.querySelector("button");
+          if (!menu || !trigger) return;
+
+          // Top-layer popovers escape the modal's scrolling container.
+          menu.showPopover();
+
+          function positionMenu() {
+            const anchor = trigger!.getBoundingClientRect();
+            const width = menu!.offsetWidth;
+            const height = menu!.offsetHeight;
+            const left = Math.max(
+              12,
+              Math.min(anchor.right - width, innerWidth - width - 12),
+            );
+            const below = anchor.bottom + 6;
+            const top =
+              below + height <= innerHeight - 12
+                ? below
+                : Math.max(12, anchor.top - height - 6);
+
+            menu!.style.left = `${left}px`;
+            menu!.style.top = `${top}px`;
           }
 
-          document.addEventListener("pointerdown", handlePointerDown);
-          document.addEventListener("keydown", handleKeyDown);
+          positionMenu();
+
+          const observer = new ResizeObserver(positionMenu);
+          observer.observe(menu);
+          observer.observe(trigger);
+
+          window.addEventListener("resize", positionMenu);
+          window.addEventListener("scroll", positionMenu, true);
+
           return () => {
-            document.removeEventListener("pointerdown", handlePointerDown);
-            document.removeEventListener("keydown", handleKeyDown);
+            observer.disconnect();
+            window.removeEventListener("resize", positionMenu);
+            window.removeEventListener("scroll", positionMenu, true);
           };
-        }, [settings]);
+        }, [storageDetails]);
 
         useEffect(() => {
           let previousScrollY = Math.max(0, window.scrollY);
@@ -2053,7 +2176,6 @@
             const hidden = scrollY > 24 && scrollY > previousScrollY;
             previousScrollY = scrollY;
             setHeaderHidden(hidden);
-            if (hidden) setSettings(false);
           }
 
           handleScroll();
@@ -2122,16 +2244,7 @@
           return () => cancelAnimationFrame(id);
         }, [scrollTarget, view, month]);
 
-        const entries = useMemo(
-          () =>
-            docs
-              .filter(
-                (document): document is EntryDocument =>
-                  !document.del && document.id.startsWith("entry:"),
-              )
-              .map((document) => document.data),
-          [docs],
-        );
+        const entries = useMemo(() => getDocumentEntries(docs), [docs]);
 
         const monthEntries = useMemo(
           () =>
@@ -2195,7 +2308,7 @@
           .sort()
           .reverse();
         const pending = docs.filter((document) => document.seq === -1).length;
-        const remoteStorage = Boolean(storage && storage !== "local");
+        const remoteStorage = Boolean(storage && !isLocalStorage(storage));
         const storageNeedsAttention =
           Boolean(error) || (remoteStorage && !cloud);
         const storageStatus = error
@@ -2321,6 +2434,7 @@
         async function importEntries(
           incoming: Entry[],
           skipDuplicates: boolean,
+          target: ReceiptBackend = backend,
         ) {
           setBusy(true);
 
@@ -2329,7 +2443,11 @@
             const nextOrderByDay: Record<string, number> = {};
             const addedEntries: Entry[] = [];
 
-            for (const entry of entries) {
+            const existingEntries = getDocumentEntries(
+              await target.documents.toArray(),
+            );
+
+            for (const entry of existingEntries) {
               const fingerprint = getEntryFingerprint(entry);
               const count = existingEntryCounts.get(fingerprint) ?? 0;
 
@@ -2358,7 +2476,7 @@
               });
             }
 
-            await backend.stage([
+            await target.stage([
               ...dayChanges(addedEntries.map((entry) => entry.dayId)),
               ...addedEntries.map((entry) => ({
                 id: "entry:" + entry.id,
@@ -2366,7 +2484,7 @@
               })),
             ]);
 
-            if (addedEntries.length) {
+            if (addedEntries.length && target === backend) {
               setMonth(addedEntries[0].dayId.slice(0, 7));
               setSelected(addedEntries[0].dayId);
             }
@@ -2380,13 +2498,33 @@
           }
         }
 
-        function exportData() {
+        async function withStorage<T>(
+          id: string,
+          action: (target: ReceiptBackend) => Promise<T>,
+        ) {
+          if (id === storage) return action(backend);
+
+          const target = new ReceiptBackend();
+
+          try {
+            await target.initialize(id);
+            return await action(target);
+          } finally {
+            target.close();
+          }
+        }
+
+        async function exportData(id: string) {
+          const exportedEntries = await withStorage(id, async (target) =>
+            getDocumentEntries(await target.documents.toArray()),
+          );
+
           const content = JSON.stringify(
             {
               app: "resito",
               version: 1,
               exportedAt: new Date().toISOString(),
-              entries: [...entries].sort(
+              entries: exportedEntries.sort(
                 (first, second) =>
                   first.dayId.localeCompare(second.dayId) ||
                   compareEntries(first, second),
@@ -2422,7 +2560,7 @@
           }));
         }
 
-        async function restoreFile(file?: File) {
+        async function restoreFile(file: File | undefined, id: string) {
           if (!file) return;
 
           try {
@@ -2430,23 +2568,35 @@
 
             setConfirmation({
               title: "백업 기록을 가져올까요?",
-              message: `${restored.length}건을 현재 저장소에 추가합니다. 동일한 기록은 건너뜁니다.`,
-              action: () => importEntries(restored, true),
+              message: `${restored.length}건을 '${getStorageName(id)}'에 추가합니다. 동일한 기록은 건너뜁니다.`,
+              action: () =>
+                withStorage(id, (target) =>
+                  importEntries(restored, true, target),
+                ),
             });
           } catch (caughtError) {
             setError("백업을 읽지 못했습니다: " + getErrorMessage(caughtError));
           }
         }
 
-        async function connectCloud() {
-          if (syncing) return;
+        async function connectCloud(sourceId?: string) {
+          if (syncing || busy) return;
 
           setSyncing(true);
           setSettings(false);
+          setStorageDetails(null);
+
+          const next = new ReceiptBackend();
+          let connected: ClxDBWithUI | null | undefined;
 
           try {
-            const { startClxDBWithUI } = await import("clxdb/ui");
-            const next = new ReceiptBackend();
+            const sourceDocuments =
+              sourceId && isLocalStorage(sourceId)
+                ? await withStorage(sourceId, (target) =>
+                    target.documents.toArray(),
+                  )
+                : [];
+
             const clxdb = await startClxDBWithUI({
               database: next,
               ui: {
@@ -2456,28 +2606,39 @@
                 syncIndicator: true,
               },
             });
+            connected = clxdb;
 
             if (!clxdb) {
               next.close();
               return;
             }
 
-            unsubs.current.forEach((fn) => fn());
-            client.current?.destroy();
-
             if (!next.db) {
               throw new Error("동기화 저장소를 초기화하지 못했습니다.");
             }
+
+            // 로컬 저장소의 기록은 원본을 보존한 채 연결한 DB에 반영합니다.
+            await next.stage(
+              sourceDocuments.map(({ id, data, del }) => ({ id, data, del })),
+            );
+
+            const dbName = next.db.name.slice("resito_clxdb_".length);
+            localStorage.setItem("resito-storage", dbName);
+
+            unsubs.current.forEach((fn) => fn());
+            client.current?.destroy();
 
             backend.close();
             backend.db = next.db;
             backend.listeners = next.listeners; // 두 객체가 같은 Dexie와 알림 집합을 사용합니다.
             client.current = clxdb as ClxDBWithUI;
 
-            const dbName = next.db.name.replace("resito_clxdb_", "");
-            localStorage.setItem("resito-storage", dbName);
             setStorage(dbName);
             setCloud(true);
+            setDocs([]);
+            setEditor(null);
+            setConfirmation(null);
+            setError("");
             setRevision((currentRevision) => currentRevision + 1);
 
             unsubs.current = [
@@ -2488,6 +2649,11 @@
 
             notify("동기화 저장소에 연결했습니다.");
           } catch (caughtError) {
+            if (backend.db !== next.db) {
+              connected?.destroy();
+              next.close();
+            }
+
             setError(
               "저장소 연결에 실패했습니다: " + getErrorMessage(caughtError),
             );
@@ -2498,6 +2664,7 @@
 
         async function syncNow() {
           setSettings(false);
+          setStorageDetails(null);
           setSyncing(true);
 
           try {
@@ -2516,24 +2683,109 @@
           }
         }
 
-        async function localStorageMode() {
-          unsubs.current.forEach((fn) => fn());
-          unsubs.current = [];
-          client.current?.destroy();
-          client.current = null;
+        async function openStorage(id: string) {
+          if (syncing || busy) return;
 
-          setReady(false);
-          await backend.initialize("local");
+          if (id !== storage) {
+            const next = new ReceiptBackend();
 
-          localStorage.setItem("resito-storage", "local");
-          setStorage("local");
-          setCloud(false);
-          setDocs([]);
-          setRevision((currentRevision) => currentRevision + 1);
-          setReady(true);
+            try {
+              await next.initialize(id);
+              localStorage.setItem("resito-storage", id);
+            } catch (caughtError) {
+              next.close();
+              throw caughtError;
+            }
+
+            unsubs.current.forEach((fn) => fn());
+            unsubs.current = [];
+            client.current?.destroy();
+            client.current = null;
+
+            backend.close();
+            backend.db = next.db;
+            backend.listeners = next.listeners;
+
+            setStorage(id);
+            setCloud(false);
+            setDocs([]);
+            setEditor(null);
+            setConfirmation(null);
+            setError("");
+            setSearch("");
+            setFilter("all");
+            setTagFilter("all");
+            setRevision((currentRevision) => currentRevision + 1);
+          }
+
+          setSettings(false);
+          setStorageDetails(null);
+        }
+
+        async function createStorage(event: React.FormEvent) {
+          event.preventDefault();
+
+          const name = newStorageName.trim();
+          if (!name || syncing || busy) return;
+
+          const id = "local-" + createId();
+
+          try {
+            localStorage.setItem("resito-storage-name:" + id, name);
+            await openStorage(id);
+            setNewStorageName("");
+          } catch (caughtError) {
+            setError(
+              "저장소를 만들지 못했습니다: " + getErrorMessage(caughtError),
+            );
+          }
+        }
+
+        function renameStorage(value: string) {
+          const name = value.trim();
+          if (!renamingStorage) return;
+
+          if (!name) {
+            setRenamingStorage(null);
+            return;
+          }
+
+          try {
+            localStorage.setItem("resito-storage-name:" + renamingStorage, name);
+            setRenamingStorage(null);
+            notify("저장소 이름을 변경했습니다.");
+          } catch (caughtError) {
+            setError(
+              "이름을 변경하지 못했습니다: " + getErrorMessage(caughtError),
+            );
+          }
+        }
+
+        function confirmStorageDeletion(id: string) {
+          setStorageDetails(null);
           setSettings(false);
 
-          notify("이 브라우저의 로컬 저장소를 열었습니다.");
+          setConfirmation({
+            title: "저장소를 삭제할까요?",
+            message: `'${getStorageName(id)}'의 이 브라우저에 저장된 기록을 모두 삭제합니다.${isLocalStorage(id) ? "" : " 클라우드 원본은 삭제하지 않습니다."}`,
+            action: async () => {
+              if (id === storage) {
+                const fallbackId =
+                  storages.find((savedId) => savedId !== id) ||
+                  "local-" + createId();
+
+                await openStorage(fallbackId);
+              }
+
+              await Dexie.delete("resito_clxdb_" + id);
+              localStorage.removeItem("resito-storage-name:" + id);
+              setStorages((current) =>
+                current.filter((savedId) => savedId !== id),
+              );
+              setRenamingStorage(null);
+              notify("저장소를 삭제했습니다.");
+            },
+          });
         }
 
         return (
@@ -2572,19 +2824,20 @@
                   ))}
                 </nav>
                 <div className="header-actions">
-                  <div className="relative" ref={storageMenuRef}>
+                  <div>
                     <button
                       className="storage-trigger"
-                      onClick={() => setSettings(!settings)}
+                      onClick={() => {
+                        setStorageDetails(null);
+                        setRenamingStorage(null);
+                        setSettings(true);
+                      }}
                       aria-expanded={settings}
-                      aria-label={`${storageLabel} · 저장소 및 백업 설정`}
+                      aria-haspopup="dialog"
+                      aria-label={`${storageLabel} · 전체 저장소 목록`}
                       title={storageLabel}
                     >
-                      {remoteStorage ? (
-                        <Cloud size={18} />
-                      ) : (
-                        <HardDrive size={18} />
-                      )}
+                      <Archive size={18} />
                       {(storageNeedsAttention ||
                         (remoteStorage && pending > 0)) && (
                         <span
@@ -2596,80 +2849,265 @@
                         />
                       )}
                     </button>
-                    {settings && (
-                      <>
-                        <div className="absolute right-0 top-11 z-40 w-64 panel shadow-xl p-2">
-                          <div className="px-3 py-3 border-b border-slate-100 mb-1">
-                            <p className="font-semibold text-xs">
-                              저장소와 백업
-                            </p>
-                            <p className="text-[10px] muted mt-1">
-                              {storageStatus}
-                            </p>
-                          </div>
-                          {cloud ? (
-                            <button
-                              className="flex gap-2 items-center p-3 text-xs w-full hover:bg-slate-50 rounded-lg"
-                              onClick={syncNow}
-                              disabled={syncing}
-                            >
-                              <FolderSync size={15} />
-                              지금 동기화
-                            </button>
-                          ) : (
-                            <button
-                              className="flex gap-2 items-center p-3 text-xs w-full hover:bg-slate-50 rounded-lg"
-                              onClick={connectCloud}
-                              disabled={syncing}
-                            >
-                              <Cloud size={15} />
-                              clxdb 저장소 연결
-                            </button>
-                          )}
-                          <button
-                            className="flex gap-2 items-center p-3 text-xs w-full hover:bg-slate-50 rounded-lg"
-                            onClick={() => {
-                              exportData();
-                              setSettings(false);
-                            }}
-                          >
-                            <Download size={15} />
-                            전체 기록 백업
-                          </button>
-                          <label className="backup-import gap-2 items-center p-3 text-xs w-full hover:bg-slate-50 rounded-lg cursor-pointer">
-                            <Upload size={15} />
-                            백업 가져오기
-                            <input
-                              type="file"
-                              accept=".json,application/json"
-                              className="hidden"
-                              onChange={(e) => {
-                                restoreFile(e.target.files?.[0]);
-                                setSettings(false);
-                                e.target.value = "";
-                              }}
-                            />
-                          </label>
-                          {storage !== "local" && (
-                            <button
-                              className="flex gap-2 items-center p-3 text-xs w-full hover:bg-slate-50 rounded-lg"
-                              onClick={() =>
-                                localStorageMode().catch((caughtError) =>
-                                  setError(getErrorMessage(caughtError)),
-                                )
-                              }
-                            >
-                              <Wallet size={15} />
-                              로컬 저장소 열기
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    )}
                   </div>
                 </div>
               </div>
             </header>
+
+            {settings && (
+              <Modal
+                title="저장소"
+                compact
+                subtitle="저장소를 선택해 열거나, 상세 메뉴에서 연동과 백업을 관리하세요."
+                onClose={() => {
+                  setSettings(false);
+                  setStorageDetails(null);
+                }}
+              >
+                <div className="space-y-1.5">
+                  {storages.map((id) => (
+                    <div
+                      key={id}
+                      className={cn(
+                        "relative flex items-center gap-2 rounded-xl border p-1",
+                        storage === id
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-slate-200",
+                      )}
+                    >
+                      {renamingStorage === id ? (
+                        <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2">
+                          {isLocalStorage(id) ? (
+                            <HardDrive size={20} className="shrink-0 muted" />
+                          ) : (
+                            <Cloud size={20} className="shrink-0 muted" />
+                          )}
+
+                          <input
+                            className="storage-name-input"
+                            aria-label="저장소 이름 바꾸기"
+                            autoFocus
+                            value={renamedStorageName}
+                            onFocus={(event) => event.currentTarget.select()}
+                            onChange={(event) =>
+                              setRenamedStorageName(event.target.value)
+                            }
+                            onBlur={(event) =>
+                              renameStorage(event.currentTarget.value)
+                            }
+                            onKeyDown={(event) => {
+                              if (event.nativeEvent.isComposing) return;
+
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              } else if (event.key === "Escape") {
+                                event.stopPropagation();
+                                setRenamingStorage(null);
+                              }
+                            }}
+                          />
+
+                          {storage === id && (
+                            <Check
+                              size={16}
+                              className="shrink-0 text-brand"
+                              aria-label="현재 저장소"
+                            />
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-50"
+                          disabled={syncing || busy || !ready}
+                          onClick={() =>
+                            openStorage(id).catch((caughtError) =>
+                              setError(getErrorMessage(caughtError)),
+                            )
+                          }
+                          aria-label={`${getStorageName(id)} 열기`}
+                        >
+                          {isLocalStorage(id) ? (
+                            <HardDrive
+                              size={20}
+                              className="shrink-0 muted"
+                              aria-label="로컬 저장소"
+                            />
+                          ) : (
+                            <Cloud
+                              size={20}
+                              className="shrink-0 muted"
+                              aria-label="클라우드 저장소"
+                            />
+                          )}
+
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-semibold">
+                              {getStorageName(id)}
+                            </span>
+                          </span>
+
+                          {storage === id && (
+                            <Check
+                              size={16}
+                              className="shrink-0 text-brand"
+                              aria-label="현재 저장소"
+                            />
+                          )}
+                        </button>
+                      )}
+
+                      <div
+                        className="shrink-0"
+                        ref={storageDetails === id ? storageMenuRef : undefined}
+                      >
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`${getStorageName(id)} 상세`}
+                          aria-expanded={storageDetails === id}
+                          aria-controls={
+                            storageDetails === id
+                              ? "storage-details"
+                              : undefined
+                          }
+                          disabled={syncing || busy || !ready}
+                          onClick={() =>
+                            setStorageDetails(storageDetails === id ? null : id)
+                          }
+                        >
+                          <Ellipsis size={19} />
+                        </button>
+
+                        {storageDetails === id && (
+                          <div
+                            id="storage-details"
+                            popover="manual"
+                            className="fixed w-52 panel shadow-xl p-1"
+                          >
+                            <button
+                              type="button"
+                              className="flex gap-2 items-center px-3 py-2 text-xs w-full hover:bg-slate-50 rounded-lg"
+                              onClick={() => {
+                                setRenamingStorage(id);
+                                setRenamedStorageName(getStorageName(id));
+                                setStorageDetails(null);
+                              }}
+                            >
+                              <Pencil size={15} />
+                              이름 바꾸기
+                            </button>
+
+                            <button
+                              type="button"
+                              className="flex gap-2 items-center px-3 py-2 text-xs w-full hover:bg-slate-50 rounded-lg"
+                              onClick={() => connectCloud(id)}
+                            >
+                              <Cloud size={15} />
+                              클라우드 연동하기
+                            </button>
+
+                            {id === storage && cloud && (
+                              <button
+                                type="button"
+                                className="flex gap-2 items-center px-3 py-2 text-xs w-full hover:bg-slate-50 rounded-lg"
+                                onClick={syncNow}
+                              >
+                                <FolderSync size={15} />
+                                지금 동기화
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              className="flex gap-2 items-center px-3 py-2 text-xs w-full hover:bg-slate-50 rounded-lg"
+                              onClick={() => {
+                                setStorageDetails(null);
+                                exportData(id).catch((caughtError) =>
+                                  setError(
+                                    "백업을 내보내지 못했습니다: " +
+                                      getErrorMessage(caughtError),
+                                  ),
+                                );
+                              }}
+                            >
+                              <Download size={15} />
+                              백업 내보내기
+                            </button>
+
+                            <label className="backup-import gap-2 items-center px-3 py-2 text-xs w-full hover:bg-slate-50 rounded-lg cursor-pointer">
+                              <Upload size={15} />
+                              백업 불러오기
+                              <input
+                                type="file"
+                                aria-label={`${getStorageName(id)}에 백업 불러오기`}
+                                accept=".json,application/json"
+                                className="sr-only"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0];
+                                  event.target.value = "";
+
+                                  if (!file) return;
+
+                                  setSettings(false);
+                                  setStorageDetails(null);
+                                  restoreFile(file, id);
+                                }}
+                              />
+                            </label>
+
+                            <div className="border-t border-slate-200 mt-1 pt-1">
+                              <button
+                                type="button"
+                                className="flex gap-2 items-center px-3 py-2 text-xs text-red-400 w-full hover:bg-slate-50 rounded-lg"
+                                onClick={() => confirmStorageDeletion(id)}
+                              >
+                                <Trash2 size={15} />
+                                저장소 삭제
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <form
+                  onSubmit={createStorage}
+                  className="flex gap-2 mt-3 pt-3 border-t border-slate-200"
+                >
+                  <input
+                    aria-label="새 저장소 이름"
+                    placeholder="새 저장소 이름"
+                    value={newStorageName}
+                    onChange={(event) => setNewStorageName(event.target.value)}
+                    disabled={syncing || busy || !ready}
+                  />
+                  <button
+                    type="submit"
+                    className="btn shrink-0"
+                    disabled={
+                      !newStorageName.trim() || syncing || busy || !ready
+                    }
+                  >
+                    <Plus size={15} />
+                    추가
+                  </button>
+                </form>
+
+                <button
+                  type="button"
+                  className="btn w-full mt-3"
+                  disabled={syncing || busy || !ready}
+                  onClick={() => connectCloud()}
+                >
+                  <Cloud size={15} />
+                  클라우드 저장소 추가
+                </button>
+              </Modal>
+            )}
 
             <main className="app-main max-w-[1240px] mx-auto px-4 sm:px-7">
               {error && (
@@ -2967,7 +3405,10 @@
                       aria-label="캘린더 월 이동"
                       className="panel hidden md:flex items-center justify-between px-3 py-2"
                     >
-                      <IconButton label="캘린더 이전 달" onClick={() => stepMonth(-1)}>
+                      <IconButton
+                        label="캘린더 이전 달"
+                        onClick={() => stepMonth(-1)}
+                      >
                         <ChevronLeft size={17} />
                       </IconButton>
                       <span
@@ -2977,7 +3418,10 @@
                       >
                         {year}년 {mon + 1}월
                       </span>
-                      <IconButton label="캘린더 다음 달" onClick={() => stepMonth(1)}>
+                      <IconButton
+                        label="캘린더 다음 달"
+                        onClick={() => stepMonth(1)}
+                      >
                         <ChevronRight size={17} />
                       </IconButton>
                     </nav>
@@ -3419,12 +3863,13 @@
             {confirmation && (
               <Modal
                 title={confirmation.title}
+                compact
                 onClose={() => !busy && setConfirmation(null)}
               >
-                <p className="text-sm text-slate-500 leading-7">
+                <p className="text-sm text-slate-500 leading-6">
                   {confirmation.message}
                 </p>
-                <div className="flex justify-end gap-2 mt-6">
+                <div className="flex justify-end gap-2 mt-4">
                   <button
                     className="btn"
                     disabled={busy}
