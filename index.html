@@ -2038,8 +2038,20 @@
         }, [settings]);
 
         useEffect(() => {
+          let previousScrollY = Math.max(0, window.scrollY);
+
           function handleScroll() {
-            const hidden = window.scrollY > 24;
+            const scrollY = Math.max(
+              0,
+              Math.min(
+                window.scrollY,
+                document.documentElement.scrollHeight - window.innerHeight,
+              ),
+            );
+            if (scrollY === previousScrollY) return;
+
+            const hidden = scrollY > 24 && scrollY > previousScrollY;
+            previousScrollY = scrollY;
             setHeaderHidden(hidden);
             if (hidden) setSettings(false);
           }
@@ -2947,10 +2959,28 @@
                 <div className="grid md:grid-cols-[340px_minmax(0,1fr)] lg:grid-cols-[370px_minmax(0,1fr)] gap-6 items-start">
                   <aside
                     className={cn(
-                      "md:sticky md:top-[100px] space-y-4",
+                      "md:sticky md:top-5 space-y-4",
                       view === "list" && "hidden md:block",
                     )}
                   >
+                    <nav
+                      aria-label="캘린더 월 이동"
+                      className="panel hidden md:flex items-center justify-between px-3 py-2"
+                    >
+                      <IconButton label="캘린더 이전 달" onClick={() => stepMonth(-1)}>
+                        <ChevronLeft size={17} />
+                      </IconButton>
+                      <span
+                        className="text-sm font-semibold tracking-tight"
+                        aria-live="polite"
+                        aria-atomic="true"
+                      >
+                        {year}년 {mon + 1}월
+                      </span>
+                      <IconButton label="캘린더 다음 달" onClick={() => stepMonth(1)}>
+                        <ChevronRight size={17} />
+                      </IconButton>
+                    </nav>
                     <section className="panel p-5 sm:p-6">
                       <div className="flex items-center justify-between mb-6">
                         <h3 className="text-base font-bold flex items-center gap-2">
